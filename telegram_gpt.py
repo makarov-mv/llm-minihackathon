@@ -22,19 +22,25 @@ import requests
 from telegram.ext import Application, ContextTypes, MessageHandler, filters, CommandHandler, CallbackQueryHandler
 from keys import TELEGRAM_KEY, HUGGING_FACE_KEY, OPENAI_KEY, TOGETHER_AI
 from pprint import pprint
-from openai import OpenAI
-import torch
+# from openai import OpenAI
+# import torch
 from together import Together
 
 from PIL import Image
 import numpy as np
 import base64
 
+# For image retrieval
+import tensorflow as tf
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications.vgg16 import preprocess_input
+from tensorflow.keras.models import Model
 
 MAX_CHAT_HISTORY = 10
 VERBOSE = True
 LOCAL_ASR = False
-CUDA_AVAILABLE = torch.cuda.is_available()
+# CUDA_AVAILABLE = torch.cuda.is_available()
 USE_TOGETHER_AI = True
 TELEGRAM_MAX_OUTPUT = 4096    # Telegram max output length
 
@@ -44,7 +50,6 @@ global N_WORDS    # number of words for response
 
 USER_MESSAGES = dict()    # dict of chat/group IDs and their messages
 N_WORDS = dict()
-
 
 # config for speech transcription
 headers = {"Authorization": f"Bearer {HUGGING_FACE_KEY}", "Content-Type": "audio/wav"}
@@ -59,14 +64,15 @@ if USE_TOGETHER_AI:
     print("Using Together AI")
     llm_model = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
     # llm_model = "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo"
+    # llm_model = "meta-llama/Llama-Vision-Free"
     client = Together(
         api_key=TOGETHER_AI,
     ) 
 else:
     print("Using OpenAI")
-    llm_model = "gpt-3.5-turbo"
+    """llm_model = "gpt-3.5-turbo"
     client = OpenAI(api_key=OPENAI_KEY)
-
+"""
 # Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -87,6 +93,12 @@ if LOCAL_ASR:
     else:
         asr_pipe = pipeline("automatic-speech-recognition", model="openai/whisper-large-v3")
     asr_rate = 16000
+
+# Load the pretrained VGG16 model for image retrieval
+base_model = VGG16(weights='imagenet')
+model = Model(inputs=base_model.input, outputs=base_model.get_layer('fc2').output)
+
+path = "images/" # path to images database (cats)
 
 # querying ASR
 def query_asr(filename):
@@ -272,8 +284,41 @@ async def listen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # send audio file
     await update.message.reply_audio(speech_file_path, caption=last_message)
 
-async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Echo user photo."""
+# Fonction pour extraire les caractéristiques d'une image
+def extract_features(img_path):
+    img = image.load_img(img_path, target_size=(224, 224))
+    img_array = image.img_to_array(img)
+    expanded_img_array = np.expand_dims(img_array, axis=0)
+    preprocessed_img = preprocess_input(expanded_img_array)
+    features = model.predict(preprocessed_img)
+    return features.flatten()
+
+database = {
+    'Greg': extract_features(path + "Greg.jpg"),
+    'Albert': extract_features(path + "Albert.jpg"),
+    'Lucy': extract_features(path + "Lucy.jpg"),
+    'Nala': extract_features(path + "Nala.jpg"),
+    # In practice we would have more cats in the database
+    # Don't name a cat "No"
+}
+
+def find_most_similar_cat(input_img_path): # Compare with cosine similarity
+    input_features = extract_features(input_img_path)
+    similarities = {}
+    for cat_id, features in database.items():
+        similarity = np.dot(input_features, features) / (np.linalg.norm(input_features) * np.linalg.norm(features))
+        similarities[cat_id] = similarity
+    most_similar_cat = max(similarities, key=similarities.get)
+    return most_similar_cat
+
+"""async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # 1) Is the photo a cat ?
+    # a) Prompt Llama
+    # b) Extract Yes or No
+
+    # 2) If yes, determine most relevant cat, else return that it is not a cat
+    # 3) Return information about the cat
+
     user_id = update.message.from_user.id
     photos = []
     for i, photo_data in enumerate(update.message.photo):
@@ -285,6 +330,52 @@ async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # load image into numpy array
     query = f"Are the cats on the following {len(photos)} images the same cat? Please be concise."
     text_response = query_llm(query, user_id, photos)
+
+    # respond text through Telegram
+    await update.message.reply_text(text_response)
+
+    # respond photo
+    # await update.message.reply_photo(tmp_photo, caption=f"Image shape: {img.shape}")"""
+
+async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # 1) Is the photo a cat ?
+    # a) Prompt Llama
+    # b) Extract Yes or No
+
+    # 2) If yes, determine most relevant cat, else return that it is not a cat
+    # 3) Return information about the cat
+
+    found_cat = "No" # No cat found yet
+
+    user_id = update.message.from_user.id
+    photos = []
+    for i, photo_data in enumerate([update.message.photo[-1]]):
+        photo_file = await photo_data.get_file()
+        tmp_photo = f"photo_{i}.jpg"
+        photos.append(tmp_photo)
+        await photo_file.download_to_drive(tmp_photo)
+    # print(len(photos))
+    # if len(photos)>1:
+    #    text_response = "Too many photos, please only submit one at the time :)"
+    #else:
+    # 1) Is the photo a cat ?
+    # a) Prompt Llama
+    query = f"Does this image represent exactly one cat ? Answer in one word : Yes or No"
+    answer = query_llm(query, user_id, photos)
+
+    # b) Extract Yes or No
+    # 2) If yes, determine most relevant cat, else return that it is not a cat
+    print(answer)
+    if ("Yes" in answer) or ("yes" in answer) :
+        answer = "yes"
+        found_cat = find_most_similar_cat(photos[0])
+    else:
+        answer = "no"
+        text_response = "I could not find a cat in this photo, please retry"
+        
+    # 3) Return information about the cat
+    if found_cat != "No" : # If we found a cat...
+        text_response = "It's " + found_cat + "!"
 
     # respond text through Telegram
     await update.message.reply_text(text_response)
