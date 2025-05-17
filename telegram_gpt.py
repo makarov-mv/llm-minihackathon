@@ -57,8 +57,8 @@ client_tts = Together(
 # prepare LLM
 if USE_TOGETHER_AI:
     print("Using Together AI")
-    # llm_model = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
-    llm_model = "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo"
+    llm_model = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+    # llm_model = "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo"
     client = Together(
         api_key=TOGETHER_AI,
     ) 
@@ -283,8 +283,8 @@ async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await photo_file.download_to_drive(tmp_photo)
 
     # load image into numpy array
-
-    text_response = query_llm("Is the cats on those images the same cat?", user_id, photos)
+    query = f"Are the cats on the following {len(photos)} images the same cat? Please be concise."
+    text_response = query_llm(query, user_id, photos)
 
     # respond text through Telegram
     await update.message.reply_text(text_response)
