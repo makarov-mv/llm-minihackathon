@@ -377,6 +377,9 @@ async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if found_cat != "No" : # If we found a cat...
         text_response = "It's " + found_cat + "!"
 
+        query = text_response + f" Please tell me what you know about this cat, including the name. Make hypothesis about missing information about it. Be concise."
+        text_response = query_llm(query, user_id, photos)
+
     # respond text through Telegram
     await update.message.reply_text(text_response)
 
