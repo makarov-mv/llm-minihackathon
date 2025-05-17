@@ -26,6 +26,10 @@ from openai import OpenAI
 import torch
 from together import Together
 
+from PIL import Image
+import numpy as np
+import base64
+
 
 MAX_CHAT_HISTORY = 10
 VERBOSE = True
@@ -53,7 +57,8 @@ client_tts = Together(
 # prepare LLM
 if USE_TOGETHER_AI:
     print("Using Together AI")
-    llm_model = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+    # llm_model = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+    llm_model = "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo"
     client = Together(
         api_key=TOGETHER_AI,
     ) 
@@ -106,8 +111,13 @@ def query_asr(filename):
         )
         return response.json()
 
+
+def encode_image(image_path):
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+
 # querying LLM
-def query_llm(input_text, user_id):
+def query_llm(input_text, user_id, image_paths=None):
 
     if user_id not in N_WORDS:
         N_WORDS[user_id] = -1
@@ -116,10 +126,29 @@ def query_llm(input_text, user_id):
         input_text += f" (in {N_WORDS[user_id]} words or less)"
 
     # add to message history
-    if user_id in USER_MESSAGES:
-        USER_MESSAGES[user_id].append({"role": "user", "content": input_text})
+    
+    if image_paths:
+        content = [
+            {"type": "text", "text": input_text},
+        ]
+        for path in image_paths:
+            base64_image = encode_image(path)
+            content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}",
+                        },
+                    })
+        message = {
+            "role": "user",
+            "content": content,
+        }
     else:
-        USER_MESSAGES[user_id] = [{"role": "user", "content": input_text}]
+        message = {"role": "user", "content": input_text}
+    if user_id in USER_MESSAGES:
+        USER_MESSAGES[user_id].append(message)
+    else:
+        USER_MESSAGES[user_id] = [message]
 
     # prompt LLM
     response = client.chat.completions.create(
@@ -243,6 +272,26 @@ async def listen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # send audio file
     await update.message.reply_audio(speech_file_path, caption=last_message)
 
+async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Echo user photo."""
+    user_id = update.message.from_user.id
+    photos = []
+    for i, photo_data in enumerate(update.message.photo):
+        photo_file = await photo_data.get_file()
+        tmp_photo = f"photo_{i}.jpg"
+        photos.append(tmp_photo)
+        await photo_file.download_to_drive(tmp_photo)
+
+    # load image into numpy array
+
+    text_response = query_llm("Is the cats on those images the same cat?", user_id, photos)
+
+    # respond text through Telegram
+    await update.message.reply_text(text_response)
+
+    # respond photo
+    # await update.message.reply_photo(tmp_photo, caption=f"Image shape: {img.shape}")
+
 def main() -> None:
     """Start the bot."""
     # Create the Application and pass it your bot's token.
@@ -255,7 +304,9 @@ def main() -> None:
 
     # text input
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input, block=True))
-
+    application.add_handler(
+        MessageHandler(filters.PHOTO & ~filters.COMMAND, photo, block=True)
+    )
 
     # commands
     application.add_handler(CommandHandler("n_words", n_words))
